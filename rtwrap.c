@@ -35,10 +35,10 @@ typedef struct add_target {
     struct add_target *next;
 } add_target_t;
 
-struct ignore_target *ignore_target_head; 
-struct ignore_target *ignore_target_tail;
-struct add_target *add_target_head;
-struct add_target *add_target_tail;
+ignore_target_t *ignore_target_head; 
+ignore_target_t *ignore_target_tail;
+add_target_t *add_target_head;
+add_target_t *add_target_tail;
 
 static const char *DEFAULT_IGNORE_TARGETS[] =
 {
@@ -86,9 +86,9 @@ fail(char const *fmt, ...)
 }
 
 
-struct ignore_target *append_ignore_target(const char *addr) {
-	struct ignore_target *ignore_target_ptr;
-	struct ignore_target *t;
+ignore_target_t *append_ignore_target(const char *addr) {
+	ignore_target_t *ignore_target_ptr;
+	ignore_target_t *t;
 
 	ignore_target_ptr = ignore_target_head;
 
@@ -96,7 +96,7 @@ struct ignore_target *append_ignore_target(const char *addr) {
           ignore_target_ptr = ignore_target_ptr->next;
         }
 
-     	t = (struct ignore_target *) malloc(sizeof *t);
+     	t = (ignore_target_t *) malloc(sizeof *t);
          
         if (addr != NULL && strncpy(t->addr, addr, strlen(addr))) {
 	  t->next = ignore_target_tail;
@@ -107,9 +107,9 @@ struct ignore_target *append_ignore_target(const char *addr) {
 	return ignore_target_ptr;
 }
 	
-struct add_target *append_add_target(char *addr) {
-	struct add_target *add_target_ptr;
-	struct add_target *t;
+add_target_t *append_add_target(char *addr) {
+	add_target_t *add_target_ptr;
+	add_target_t *t;
         char *token = NULL;
 
         int pos = 0;
@@ -120,7 +120,7 @@ struct add_target *append_add_target(char *addr) {
           add_target_ptr = add_target_ptr->next;
         }
 
-     	t = (struct add_target *) malloc(sizeof *t);
+     	t = (add_target_t *) malloc(sizeof *t);
 
         while ((token = strsep(&addr, ":"))) {
           if (pos == 0) 
@@ -139,7 +139,7 @@ struct add_target *append_add_target(char *addr) {
 }
 	
 int ignore_target_exists_str(const char *addr) { 
-    struct ignore_target *ignore_target_ptr;
+    ignore_target_t *ignore_target_ptr;
 
     ignore_target_ptr = ignore_target_head->next;
 
@@ -155,7 +155,7 @@ int ignore_target_exists_str(const char *addr) {
 }
 
 int ignore_target_exists(struct sockaddr_in const *sa) { 
-    struct ignore_target *ignore_target_ptr = ignore_target_head; 
+    ignore_target_t *ignore_target_ptr = ignore_target_head; 
 
     // ignore_target_ptr = ignore_target_head->next;
 
@@ -190,7 +190,7 @@ route_wrapper(int fd, int request, struct rtentry *entry)
      * RTWRAP_ADD=172.30.0.0:255.255.0.0
      */
      
-    struct add_target *add_target_ptr = add_target_head;
+    add_target_t *add_target_ptr = add_target_head;
 
     add_target_ptr = add_target_head->next;
 
@@ -244,7 +244,7 @@ route_wrapper(int fd, int request, struct rtentry *entry)
      * Silently ignore requests to the specified ignore_targets
      */
 
-    struct ignore_target *ignore_target_ptr;
+    ignore_target_t *ignore_target_ptr;
 
     ignore_target_ptr = ignore_target_head->next;
 
@@ -296,17 +296,17 @@ librtwrap_init()
      * Initialize the list
      */
 
-    struct ignore_target *ignore_target_ptr;
-    struct add_target *add_target_ptr;
+    ignore_target_t *ignore_target_ptr;
+    add_target_t *add_target_ptr;
 
-    ignore_target_head = (struct ignore_target *) malloc(sizeof *ignore_target_head);
-    ignore_target_tail = (struct ignore_target *) malloc(sizeof *ignore_target_tail);
+    ignore_target_head = (ignore_target_t *) malloc(sizeof *ignore_target_head);
+    ignore_target_tail = (ignore_target_t *) malloc(sizeof *ignore_target_tail);
 
     ignore_target_head->next = ignore_target_tail;
     ignore_target_tail->next = ignore_target_tail;
 
-    add_target_head = (struct add_target *) malloc(sizeof *add_target_head);
-    add_target_tail = (struct add_target *) malloc(sizeof *add_target_tail);
+    add_target_head = (add_target_t *) malloc(sizeof *add_target_head);
+    add_target_tail = (add_target_t *) malloc(sizeof *add_target_tail);
 
     add_target_head->next = add_target_tail;
     add_target_tail->next = add_target_tail;
