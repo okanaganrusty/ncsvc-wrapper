@@ -10,7 +10,7 @@ INSTALL_DIR = $(NC_DIR)/rtwrap
 #
 
 CC = gcc
-CFLAGS = -m32 -Werror -g -std=c99 -Wall -fPIC
+CFLAGS = -m32 -g -std=c99 -Wall -fPIC
 CPPFLAGS = '-DNC_DIR="$(NC_DIR)"' '-DINSTALL_DIR="$(INSTALL_DIR)"'
 
 INSTALL = install
