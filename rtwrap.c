@@ -8,6 +8,7 @@
 
 #include <net/route.h>
 #include <linux/sockios.h>
+#include <linux/if.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <dlfcn.h>
@@ -19,7 +20,8 @@
 #include <unistd.h>
 #include "rtwrap.h"
 
-int check_environment(char *header, void *ptr) { 
+int check_environment(char *header, void *ptr) 
+{ 
   char *data;
 
   if ((data = getenv(header)) == NULL) 
@@ -37,8 +39,7 @@ int check_environment(char *header, void *ptr) {
   return 1;
 }
 
-static void 
-dbg_log(char const *fmt, ...)
+static void dbg_log(char const *fmt, ...) 
 {
   va_list ap;
 
@@ -53,8 +54,7 @@ dbg_log(char const *fmt, ...)
   fflush(f_logfile);
 }
 
-static void
-fail(char const *fmt, ...)
+static void fail(char const *fmt, ...) 
 {
   va_list ap;
 
@@ -67,8 +67,7 @@ fail(char const *fmt, ...)
   abort();
 }
 
-static void
-warn(char const *fmt, ...)
+static void warn(char const *fmt, ...)
 {
   va_list ap;
 
@@ -78,7 +77,8 @@ warn(char const *fmt, ...)
   va_end(ap);
 }
 
-ignore_target_t *append_ignore_target(char *target) {
+ignore_target_t *append_ignore_target(char *target) 
+{
   ignore_target_t *t;
   ignore_target_t *ignore_target_ptr = ignore_target_head;
 
@@ -101,7 +101,8 @@ ignore_target_t *append_ignore_target(char *target) {
   return ignore_target_ptr;
 }
 	
-add_target_t *append_add_target(char *addr) {
+add_target_t *append_add_target(char *addr) 
+{
   add_target_t *add_target_ptr;
   add_target_t *t;
   char *token = NULL;
@@ -135,13 +136,20 @@ add_target_t *append_add_target(char *addr) {
   return add_target_ptr;
 }
 	
-int ignore_target_exists(struct sockaddr_in const *sa) { 
-  ignore_target_t *ignore_target_ptr = ignore_target_head; 
+int ignore_target_exists(struct sockaddr_in *sa) 
+{ 
+  char sa_address[32] = { 0 };
+  char ignore_address[32] = { 0 };
 
+  ignore_target_t *ignore_target_ptr = ignore_target_head->next;
+
+  inet_ntop(AF_INET, (struct in_addr *)(&sa->sin_addr.s_addr), sa_address, 32);
+ 
   while (ignore_target_ptr != ignore_target_tail) {
-    if (sa->sin_addr.s_addr == ignore_target_ptr->network.sin_addr.s_addr) {
-      dbg_log("rtwrap: match %s and %s, target exists", inet_ntoa(sa->sin_addr), inet_ntoa(ignore_target_ptr->network.sin_addr)); 
-      return 1;
+    inet_ntop(AF_INET, (struct in_addr *)(&ignore_target_ptr->network.sin_addr.s_addr), ignore_address, 32);
+
+    if (strncmp(sa_address, ignore_address, strlen(ignore_address)) == 0) { 
+      return 1; 
     }
 
     ignore_target_ptr = ignore_target_ptr->next;
@@ -150,29 +158,56 @@ int ignore_target_exists(struct sockaddr_in const *sa) {
   return 0;
 }
 
+/*
+static int 
+interface_wrapper(int fd, int request, struct ifreq *entry) { 
+  int iffd;
+  struct ifreq *if_req = entry;
+
+  iffd = socket(AF_INET, SOCK_DGRAM, 0);
+  close(iffd);
+
+  printf("interface name: %s\n", if_req->ifr_ifrn.ifrn_name);
+
+  return real_ioctl(fd, request, entry);
+}
+*/
+
 static int
 route_wrapper(int fd, int request, struct rtentry *entry)
 {
   char network_address[32] = { 0 };
-  char gateway_address[32] = { 0 };
   char network_mask[32] = { 0 };
+
+  char rt_network_address[32] = { 0 };
+  char rt_gateway_address[32] = { 0 };
+  char rt_network_mask[32] = { 0 };
+
+  int err;
 
   if (entry->rt_dst.sa_family != AF_INET)
     return real_ioctl(fd, request, entry);
 
   struct rtentry route;
-  struct sockaddr_in *dst_addr = (struct sockaddr_in *) &entry->rt_dst;
+
   struct sockaddr_in *rt_gateway = (struct sockaddr_in *) &entry->rt_gateway;
+  struct sockaddr_in *rt_network = (struct sockaddr_in *) &entry->rt_dst;
+  struct sockaddr_in *rt_netmask = (struct sockaddr_in *) &entry->rt_genmask;
+
+  inet_ntop(AF_INET, (struct in_addr *)(&rt_gateway->sin_addr.s_addr), rt_gateway_address, 32);
+  inet_ntop(AF_INET, (struct in_addr *)(&rt_network->sin_addr.s_addr), rt_network_address, 32);
+  inet_ntop(AF_INET, (struct in_addr *)(&rt_netmask->sin_addr.s_addr), rt_network_mask, 32);
 
   add_target_t *add_target_ptr = add_target_head->next;
-   
+
   while (add_target_ptr != add_target_tail) { 
-    memset(&route, 0, sizeof(struct rtentry));
-
-    int rtfd = socket(AF_INET, SOCK_DGRAM, 0);
-
     // Gateway
     struct sockaddr_in gateway;
+
+    memset(&route, 0, sizeof(struct rtentry));
+    memset(&gateway, 0, sizeof(struct sockaddr_in));
+
+    int rtfd = socket(AF_INET, SOCK_DGRAM, 0);
 
     gateway.sin_addr.s_addr = rt_gateway->sin_addr.s_addr;
     gateway.sin_family = AF_INET;
@@ -188,18 +223,17 @@ route_wrapper(int fd, int request, struct rtentry *entry)
 
     inet_ntop(AF_INET, (struct in_addr *)(&add_target_ptr->network.sin_addr.s_addr), network_address, 32);
     inet_ntop(AF_INET, (struct in_addr *)(&add_target_ptr->netmask.sin_addr.s_addr), network_mask, 30);
-    inet_ntop(AF_INET, (struct in_addr *)(&rt_gateway->sin_addr.s_addr), gateway_address, 32);
-
-    dbg_log("Adding route %s/%s via %s", network_address, network_mask, gateway_address);
 
     memcpy((void *) &route.rt_gateway, &gateway, sizeof(gateway));
 
     route.rt_flags = RTF_UP | RTF_GATEWAY;
     route.rt_metric = 1;
 
-    int err;
+    dbg_log("rtwrap: %s route %s/%s via %s", 
+      (request == SIOCADDRT ? "adding" : "removing"), 
+      network_address, network_mask, rt_gateway_address);
 
-    if ((err = real_ioctl(rtfd, SIOCADDRT, &route)) != 0) {
+    if ((err = real_ioctl(rtfd, request, &route)) != 0) {
       perror("ioctl");
     }
 
@@ -212,23 +246,15 @@ route_wrapper(int fd, int request, struct rtentry *entry)
    * Silently ignore requests to the specified ignore_targets
    */
 
-  if (IGNORE_ADD_NETWORK) {
+  dbg_log("rtwrap: received route request for %s/%s via %s", rt_network_address, rt_network_mask, rt_gateway_address);
+
+  if (IGNORE_ALL_NETWORK && (request == SIOCADDRT || request == SIOCDELRT)) {
+    dbg_log("rtwrap: ignoring route request because we are ignoring all pushed routes");
     return 0;
   }
-  
-  ignore_target_t *ignore_target_ptr;
-  ignore_target_ptr = ignore_target_head->next;
 
-  while (ignore_target_ptr != ignore_target_tail) {
-    if (ignore_target_exists(route.rt_dst) == 1) {
-      dbg_log("rtwrap: ignoring request to %s route for %s", 
-	      request == SIOCADDRT ? "add" : "delete", 
-	      inet_ntoa(&route.rt_dst->sin_addr));
-
-      return 0;
-    }
-
-    ignore_target_ptr = ignore_target_ptr->next;
+  if (ignore_target_exists(rt_network)) {
+    return 0;
   }
 
   return real_ioctl(fd, request, entry);
@@ -239,6 +265,11 @@ ioctl(int fd, int request, void *arg)
 {
   if (request == SIOCADDRT || request == SIOCDELRT)
     return route_wrapper(fd, request, arg);
+
+  /*
+  if (request == SIOCSIFADDR || request == SIOCGIFADDR || request == SIOCDIFADDR)
+    return interface_wrapper(fd, request, arg);
+  */
 
   return real_ioctl(fd, request, arg);
 }
@@ -276,15 +307,15 @@ librtwrap_init()
   memset(&buffer, 0, sizeof(buffer));
 
   if (check_environment("RTWRAP_IGNORE_ALL_NETWORK", &buffer)) {    
-    IGNORE_ADD_NETWORK = atoi(buffer);
+    IGNORE_ALL_NETWORK = atoi(buffer);
     
-    if (IGNORE_ADD_NETWORK != 0 || IGNORE_ADD_NETWORK != 1) {
+    if (IGNORE_ALL_NETWORK < 0 || IGNORE_ALL_NETWORK > 1) { 
       /* Assume it's always 1 if it's set, but the value is unknown */
-      IGNORE_ADD_NETWORK = 1;
+      IGNORE_ALL_NETWORK = 1;
     }
   }
   
-  if (!IGNORE_ADD_NETWORK) {
+  if (!IGNORE_ALL_NETWORK) {
     dbg_log("rtwrap: allowing route additions");
     
     /*
