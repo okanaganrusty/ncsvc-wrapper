@@ -2,7 +2,10 @@
 
 #define DEFAULT_BUFFER_SIZE 4096
 
-int IGNORE_ADD_NETWORK = 0; 
+int IGNORE_ALL_NETWORK = 0; 
+
+// Lets store the default gateway and ignore adding any routes against it.
+struct sockaddr_in DEFAULT_GATEWAY = NULL;
 
 static const char *DEFAULT_IGNORE_TARGETS[] =
   {
