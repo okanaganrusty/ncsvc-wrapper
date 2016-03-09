@@ -1,11 +1,11 @@
 #define _GNU_SOURCE
 
-#define DEFAULT_BUFFER_SIZE 4096
+#define DEFAULT_BUFFER_SIZE 512
 
 int IGNORE_ALL_NETWORK = 0; 
 
 // Lets store the default gateway and ignore adding any routes against it.
-struct sockaddr_in DEFAULT_GATEWAY = NULL;
+static char TUNNEL_INTERFACE_NAME[DEFAULT_BUFFER_SIZE];
 
 static const char *DEFAULT_IGNORE_TARGETS[] =
   {

@@ -8,7 +8,12 @@
 
 #include <net/route.h>
 #include <linux/sockios.h>
+#include <linux/ip.h>
 #include <linux/if.h>
+#include <linux/if_tun.h>
+#include <linux/if_tunnel.h>
+#include <sys/types.h>
+#include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <dlfcn.h>
@@ -118,6 +123,7 @@ add_target_t *append_add_target(char *addr)
   t = (add_target_t *) malloc(sizeof *t);
   t->network.sin_port = htons(0);
   t->network.sin_family = AF_INET;
+
   t->netmask.sin_port = htons(0);
   t->netmask.sin_family = AF_INET;
 
@@ -158,45 +164,67 @@ int ignore_target_exists(struct sockaddr_in *sa)
   return 0;
 }
 
-/*
-static int 
-interface_wrapper(int fd, int request, struct ifreq *entry) { 
-  int iffd;
-  struct ifreq *if_req = entry;
-
-  iffd = socket(AF_INET, SOCK_DGRAM, 0);
-  close(iffd);
-
-  printf("interface name: %s\n", if_req->ifr_ifrn.ifrn_name);
-
-  return real_ioctl(fd, request, entry);
-}
-*/
-
 static int
 route_wrapper(int fd, int request, struct rtentry *entry)
-{
+{  
+  struct rtentry route;
+
   char network_address[32] = { 0 };
   char network_mask[32] = { 0 };
-
+  char gateway_address[32] = { 0 };
+  
   char rt_network_address[32] = { 0 };
   char rt_gateway_address[32] = { 0 };
   char rt_network_mask[32] = { 0 };
-
+  
   int err;
-
+  int ipfd;
+  
   if (entry->rt_dst.sa_family != AF_INET)
     return real_ioctl(fd, request, entry);
 
-  struct rtentry route;
+  struct ifreq ifr;
+  struct sockaddr_in *rt_ifr_gateway;
 
+  ipfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+  if (ipfd > 0) {
+    memset(&ifr, 0, sizeof(struct ifreq));
+    memset(&gateway_address, 0, sizeof(gateway_address));
+  
+    ifr.ifr_addr.sa_family = AF_INET;
+
+    strncpy(ifr.ifr_name, TUNNEL_INTERFACE_NAME, strlen(TUNNEL_INTERFACE_NAME));
+    
+    if (real_ioctl(ipfd, SIOCGIFADDR, &ifr) == -1) {
+    }
+
+    rt_ifr_gateway = (struct sockaddr_in *) &ifr.ifr_addr;
+    
+    inet_ntop(AF_INET, (struct in_addr *)(&rt_ifr_gateway->sin_addr.s_addr), gateway_address, 32);
+    
+    if (ipfd)
+      close(ipfd);
+  }
+
+  // TUNNEL_INTERFACE_NAME
   struct sockaddr_in *rt_gateway = (struct sockaddr_in *) &entry->rt_gateway;
   struct sockaddr_in *rt_network = (struct sockaddr_in *) &entry->rt_dst;
   struct sockaddr_in *rt_netmask = (struct sockaddr_in *) &entry->rt_genmask;
 
-  inet_ntop(AF_INET, (struct in_addr *)(&rt_gateway->sin_addr.s_addr), rt_gateway_address, 32);
   inet_ntop(AF_INET, (struct in_addr *)(&rt_network->sin_addr.s_addr), rt_network_address, 32);
   inet_ntop(AF_INET, (struct in_addr *)(&rt_netmask->sin_addr.s_addr), rt_network_mask, 32);
+  inet_ntop(AF_INET, (struct in_addr *)(&rt_gateway->sin_addr.s_addr), rt_gateway_address, 32);
+  
+  if (strncmp(gateway_address, rt_gateway_address, strlen(gateway_address)) != 0) {
+    dbg_log("rtwrap: denying route %s/%s via %s; not via the tunnel interface '%s'",
+	    rt_network_address,
+	    rt_network_mask,
+	    rt_gateway_address,
+	    TUNNEL_INTERFACE_NAME);
+
+    return 0;
+  }
 
   add_target_t *add_target_ptr = add_target_head->next;
 
@@ -234,7 +262,6 @@ route_wrapper(int fd, int request, struct rtentry *entry)
       network_address, network_mask, rt_gateway_address);
 
     if ((err = real_ioctl(rtfd, request, &route)) != 0) {
-      perror("ioctl");
     }
 
     close(rtfd);
@@ -263,13 +290,10 @@ route_wrapper(int fd, int request, struct rtentry *entry)
 int
 ioctl(int fd, int request, void *arg)
 {
-  if (request == SIOCADDRT || request == SIOCDELRT)
+  if (request == SIOCADDRT || request == SIOCDELRT) {
+    dbg_log("rtwrap: request to add/remove a route");
     return route_wrapper(fd, request, arg);
-
-  /*
-  if (request == SIOCSIFADDR || request == SIOCGIFADDR || request == SIOCDIFADDR)
-    return interface_wrapper(fd, request, arg);
-  */
+  }
 
   return real_ioctl(fd, request, arg);
 }
@@ -282,6 +306,16 @@ librtwrap_init()
   char *token;
   char *ptr;
   
+  add_target_head = (add_target_t *) malloc(sizeof *add_target_head);
+  add_target_tail = (add_target_t *) malloc(sizeof *add_target_tail);
+  add_target_head->next = add_target_tail;
+  add_target_tail->next = add_target_tail;
+ 
+  ignore_target_head = (ignore_target_t *) malloc(sizeof *ignore_target_head);
+  ignore_target_tail = (ignore_target_t *) malloc(sizeof *ignore_target_tail);
+  ignore_target_head->next = ignore_target_tail;
+  ignore_target_tail->next = ignore_target_tail;
+
   /*
    * Enable debug logging when the RTWRAP_LOG environment variable is set
    */
@@ -302,15 +336,46 @@ librtwrap_init()
       }
     }
 
+  /* 
+   * Get all interfaces, to figure out the next interface tun#, ncsvc always adds 1 to tun# 
+   */
+
+  int tunnels = 0;
+
+  struct ifaddrs *ifaddr, *ifa;
+
+  if (getifaddrs(&ifaddr) == -1) 
+    {
+      fail("failed to get a list of interfaces");
+    }
+  
+  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) 
+    {
+      if (strncmp(ifa->ifa_name, "tun", 3) == 0) {
+	tunnels++;
+      }      
+    }
+  
+  freeifaddrs(ifaddr);
+  
+  memset(TUNNEL_INTERFACE_NAME, 0, sizeof(TUNNEL_INTERFACE_NAME));
+  sprintf(TUNNEL_INTERFACE_NAME, "tun%d", tunnels);
+  
   dbg_log("rtwrap: starting at %ld", (long)time(NULL));
+  dbg_log("rtwrap: tunnel interface created will be called '%s'", TUNNEL_INTERFACE_NAME);
 
   memset(&buffer, 0, sizeof(buffer));
+
+  /* 
+   * Assume that if RTWRAP_IGNORE_ALL_NETWORK is set, but it's an invalid value
+   * enable the feature.
+   */
 
   if (check_environment("RTWRAP_IGNORE_ALL_NETWORK", &buffer)) {    
     IGNORE_ALL_NETWORK = atoi(buffer);
     
     if (IGNORE_ALL_NETWORK < 0 || IGNORE_ALL_NETWORK > 1) { 
-      /* Assume it's always 1 if it's set, but the value is unknown */
+      warn("rtwrap: ignore all networks value '%s' is invalid, enabling feature automatically", buffer);
       IGNORE_ALL_NETWORK = 1;
     }
   }
@@ -318,20 +383,6 @@ librtwrap_init()
   if (!IGNORE_ALL_NETWORK) {
     dbg_log("rtwrap: allowing route additions");
     
-    /*
-     * Initialize the list
-     */
-
-    ignore_target_head = (ignore_target_t *) malloc(sizeof *ignore_target_head);
-    ignore_target_tail = (ignore_target_t *) malloc(sizeof *ignore_target_tail);
-
-    ignore_target_head->next = ignore_target_tail;
-    ignore_target_tail->next = ignore_target_tail;
-
-    /* 
-     * Add to the list of ignored networks via environment variable
-     */
-     
     for (i = 0; i < (sizeof(DEFAULT_IGNORE_TARGETS) / sizeof(DEFAULT_IGNORE_TARGETS[0])); i++) { 
       if (DEFAULT_IGNORE_TARGETS[i] == NULL) 
         continue;
@@ -355,12 +406,7 @@ librtwrap_init()
   memset(&buffer, 0, DEFAULT_BUFFER_SIZE);
 
   if (check_environment("RTWRAP_ADD_NETWORK", &buffer)) { 
-    add_target_head = (add_target_t *) malloc(sizeof *add_target_head);
-    add_target_tail = (add_target_t *) malloc(sizeof *add_target_tail);
-    add_target_head->next = add_target_tail;
-    add_target_tail->next = add_target_tail;
-
-    ptr = buffer;
+   ptr = buffer;
 
     while ((token = strsep(&ptr, ","))) {
       dbg_log("rtwrap: appending environmental add targets to list %s", token);
